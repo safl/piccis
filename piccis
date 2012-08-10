@@ -1,0 +1,147 @@
+#!/usr/bin/env python
+#
+# Piccis - Picture control, indexing and synchronization
+# Copyright (C) 2012  Simon A. F. Lund <safl@safl.dk>
+#
+# This program is free software: you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation, either version 3 of the License, or
+# (at your option) any later version.
+#
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License
+# along with this program.  If not, see <http://www.gnu.org/licenses/>.
+#
+import ConfigParser
+import argparse
+import os
+
+from piccislib.indexer import *
+
+#
+# Requirements: 
+#   - Python 2.7 ( argparse ), 
+#   - GData ( Picasa Web Albums )
+#
+
+ERRNO_SUCCESS=0
+ERRNO_COMPARE_GT=200
+ERRNO_COMPARE_LT=210
+
+def refresh( sources ):
+
+    for source in sources:
+        source.refresh()
+        source.to_file()
+
+def iprint( sources ):
+
+    files = {}
+    for src in sources:
+        files[src.name] = [fns['title'] for album in src.index for fns in src.index[album]]
+
+    print files
+
+def iprint_flat( sources ):
+
+    files = []
+    for src in sources:
+        files += [fns['title'] for album in src.index for fns in src.index[album]]
+
+    for fn in files:
+        print fn
+
+def compare( sources ):
+
+    if len(sources) > 2:
+        return ERRNO_COMPARE_GT
+    elif len(sources) <2:
+        return ERRNO_COMPARE_LT
+
+    files = {}
+    i = 0
+    for src in sources:
+        if i == 0:
+            files['left']   = set(fns['title'] for album in src.index for fns in src.index[album])
+            i += 1
+        else:
+            files['right']  = set(fns['title'] for album in src.index for fns in src.index[album])
+
+    files['synced']     = files['left']     & files['right']
+    files['left_only']  = files['left']     - files['synced']
+    files['right_only'] = files['right']    - files['synced']
+
+    for fset in files:
+        print "[",fset, len(files[fset]),"]"
+        if 'only' in fset:
+            l = list(files[fset])
+            l.sort()
+            for fn in l:
+                print fn
+
+    return ERRNO_SUCCESS
+
+def duplicates( sources, method='naive' ):
+    """Naively determine duplicates based on name."""
+
+    files   = []
+    dups    = []
+
+    for src in sources:
+        for album in src.index:
+            for img in src.index[album]:
+                if img['title'] in files:
+                    dups.append(img)
+                else:
+                    files.append(img['title'])
+
+    print dups, len(dups)
+
+def main(command, sources=[]):
+
+    commands    = {
+        'refresh':      refresh,
+        'print':        iprint,
+        'print_flat':   iprint_flat,
+        'compare':      compare,
+        'duplicates':   duplicates
+    }
+    
+    commands[args.command]( sources )
+
+if __name__ == "__main__":
+
+    source_types = {
+        'picasa':   Picasa,
+        'local':    Local
+    }
+    sources = []                            # List of picture-sources
+
+    parser = argparse.ArgumentParser()      # Parse command-line
+    parser.add_argument("-c", "--config",   dest="config", help="Path to config-file.", type=str)
+    parser.add_argument("command", choices=['refresh','print','print_flat','compare', 'duplicates'], help="Perform an index of provided sources.")
+    parser.add_argument("-s", "--source", dest="sources", action='append', help="Sources to use.")
+    args = parser.parse_args()
+
+    if args.config:                         # Parse 'sources' from config-file
+        conf_path = args.config
+    else:
+        conf_path = os.path.expanduser('~/.piccis/sources.conf')
+
+    if not os.path.exists(conf_path):
+        os.makedirs(conf_path)
+
+    conf = ConfigParser.RawConfigParser()
+    conf.read(conf_path)
+
+    for source in args.sources:             # Instantiate sources
+        source_type = conf.get(source, 'type')
+        source_args = dict([ opt for opt in conf.items(source) if not opt[0] == 'type' ])
+        source_args['name'] = source
+        sources.append( source_types[source_type]( **source_args ) )
+
+    main( args.command, sources )
