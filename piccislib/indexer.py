@@ -18,8 +18,11 @@
 #
 
 from base64 import b64decode
-import fnmatch
+import hashlib
+import urllib
+import time
 import json
+import zlib
 import os
 
 import gdata.photos.service
@@ -61,6 +64,12 @@ class Indexer(object):
         with open(path, "w") as fd:
             json.dump(index, fd, sort_keys=True, indent=1)
 
+    def progress(self, txt):
+        print txt
+
+    def checksum(self, topic):
+        return hashlib.sha512(topic).hexdigest()
+
 class Picasa(Indexer):
 
     def __init__(self, name, username, password):
@@ -75,18 +84,34 @@ class Picasa(Indexer):
 
         super(Picasa, self).__init__('picasa-%s' % name)
 
+    def __picasa_orig(self, url):
+        urls = url.split("/")
+        return '/'.join(urls[:-1])+ '/s0/' +urls[-1]
+
+    def download(self):
+
+        photos = self.cli.GetUserFeed(kind='photo', limit='10')
+        for photo in photos.entry:
+            print 'Downloading: ', photo.title.text
+            urllib.urlretrieve( self.__picasa_orig(photo.content.src), '/tmp/'+photo.title.text)
+
     def refresh(self, limit=[]):
         
-        index  = {}
+        index = {
+            '__META__': {
+                'timestamp':    int(time.time()),
+                'root':         self.root
+            }
+        }
         albums  = self.cli.GetUserFeed(user= self.username)
         count   = len(limit) if limit else len(albums.entry)
         cur     = 1
         
-        print "Indexing albums..."
+        self.progress("Indexing albums...")
         for album in (a for a in albums.entry if (a.title.text in limit) or not limit):
-            print " %d / %d ..." % (cur, count),
-            print 'title: %s, number of photos: %s, id: %s' % (album.title.text,
-          album.numphotos.text, album.gphoto_id.text)
+            self.progress(" %d / %d ..." % (cur, count))
+            self.progress("title: %s, number of photos: %s, id: %s" % (album.title.text,
+          album.numphotos.text, album.gphoto_id.text))
             cur += 1
             photos = self.cli.GetFeed(
                 '/data/feed/api/user/%s/albumid/%s?kind=photo' % (self.cli.email, album.gphoto_id.text)
@@ -98,7 +123,9 @@ class Picasa(Indexer):
                 p = {
                     'title':        photo.title.text,
                     'size':         int(photo.size.text),
-                    'timestamp':    int(photo.timestamp.text)
+                    'timestamp':    int(photo.timestamp.text),
+                    'checksum':     None,
+                    'path':         None
                 }
                 index[album.title.text].append(p)
 
@@ -115,7 +142,13 @@ class Local(Indexer):
 
     def refresh(self, limit=[]):
 
-        index = {}
+        index = {
+            '__META__': {
+                'timestamp':    int(time.time()),
+                'root':         self.root
+            }
+        }
+
         for root, dirs, files in os.walk(self.root):
             text = os.path.basename(root)
 
@@ -123,11 +156,16 @@ class Local(Indexer):
                 index[text] = []
 
             for fn in files:
-                stat = os.stat(root+os.sep+fn)
-                index[text].append({'size': stat.st_size, 'timestamp':stat.st_ctime, 'title':fn})
+                path = root +os.sep+ fn
+                stat = os.stat(path)
+                index[text].append({
+                    'title':        fn,
+                    'size':         stat.st_size, 
+                    'timestamp':    stat.st_ctime,
+                    'checksum':     self.checksum(open(path).read()),
+                    'path':         path
+                })
 
         self.index = index
         return index
 
-if __name__ == "__main__":
-    main()

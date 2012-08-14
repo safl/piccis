@@ -18,6 +18,7 @@
 #
 import ConfigParser
 import argparse
+import pprint
 import os
 
 from piccislib.indexer import *
@@ -42,7 +43,7 @@ def iprint( sources ):
 
     files = {}
     for src in sources:
-        files[src.name] = [fns['title'] for album in src.index for fns in src.index[album]]
+        files[src.name] = [fns['title'] for album in src.index for fns in src.index[album] if not album == "__META__"]
 
     print files
 
@@ -50,7 +51,7 @@ def iprint_flat( sources ):
 
     files = []
     for src in sources:
-        files += [fns['title'] for album in src.index for fns in src.index[album]]
+        files += [fns['title'] for album in src.index for fns in src.index[album] if not album == "__META__"]
 
     for fn in files:
         print fn
@@ -62,44 +63,75 @@ def compare( sources ):
     elif len(sources) <2:
         return ERRNO_COMPARE_LT
 
-    files = {}
-    i = 0
-    for src in sources:
-        if i == 0:
-            files['left']   = set(fns['title'] for album in src.index for fns in src.index[album])
-            i += 1
-        else:
-            files['right']  = set(fns['title'] for album in src.index for fns in src.index[album])
+    left    = sources[0]
+    right   = sources[1]
 
-    files['synced']     = files['left']     & files['right']
-    files['left_only']  = files['left']     - files['synced']
-    files['right_only'] = files['right']    - files['synced']
+    names   = {
+        'synced': "%s, %s" % (left.name, right.name),
+
+        'left':     left.name,
+        'right':    right.name,
+
+        'left_only':    left.name,
+        'right_only':   right.name
+    }
+    files   = {
+        'synced':[], 'left':[], 'right':[], 'left_only':[], 'right_only':[]
+    }
+
+    left_t  = dict((img['checksum'], img['path']) for album in left.index for img in left.index[album] if not album == "__META__")
+    right_t = dict((img['checksum'], img['path']) for album in right.index for img in right.index[album] if not album == "__META__")
+
+    files['left']   = left_t
+    files['right']  = right_t
+
+    for checksum in left_t:
+        if checksum in right_t:
+            files['synced'].append((left_t[checksum], right_t[checksum]))
+            del right_t[checksum]
+        else:
+            files['left_only'].append((left_t[checksum], None))
+
+    files['right_only'] = [(None, right_t[checksum]) for checksum in right_t]
+
 
     for fset in files:
-        print "[",fset, len(files[fset]),"]"
+        print "[%s - %s - %d]" % (fset, names[fset], len(files[fset]))
         if 'only' in fset:
-            l = list(files[fset])
-            l.sort()
-            for fn in l:
+            files[fset].sort()
+            for fn in files[fset]:
                 print fn
-
     return ERRNO_SUCCESS
 
-def duplicates( sources, method='naive' ):
-    """Naively determine duplicates based on name."""
+def duplicates( sources ):
+    """Determine duplicates based on checksum."""
 
-    files   = []
-    dups    = []
+    dups    = {}
+
+    files = [(img['checksum'], img['path']) for src in sources for album in src.index if album != "__META__" for img in src.index[album]]
+    files.sort()
+
+    checksum_p  = None
+    path_p      = None
+
+    for checksum, path in files:
+
+        if checksum == checksum_p:  # Duplicates
+            if checksum in dups:
+                dups[checksum].append(path)
+            else:
+                dups[checksum] = [path, path_p]
+
+        checksum_p  = checksum
+        path_p      = path
+
+    pprint.pprint(dups)
+    return dups
+
+def download( sources ):
 
     for src in sources:
-        for album in src.index:
-            for img in src.index[album]:
-                if img['title'] in files:
-                    dups.append(img)
-                else:
-                    files.append(img['title'])
-
-    print dups, len(dups)
+        src.download()
 
 def main(command, sources=[]):
 
@@ -108,7 +140,8 @@ def main(command, sources=[]):
         'print':        iprint,
         'print_flat':   iprint_flat,
         'compare':      compare,
-        'duplicates':   duplicates
+        'duplicates':   duplicates,
+        'download':     download
     }
     
     commands[args.command]( sources )
@@ -123,7 +156,7 @@ if __name__ == "__main__":
 
     parser = argparse.ArgumentParser()      # Parse command-line
     parser.add_argument("-c", "--config",   dest="config", help="Path to config-file.", type=str)
-    parser.add_argument("command", choices=['refresh','print','print_flat','compare', 'duplicates'], help="Perform an index of provided sources.")
+    parser.add_argument("command", choices=['refresh','print','print_flat','compare', 'duplicates', 'download'], help="Perform an index of provided sources.")
     parser.add_argument("-s", "--source", dest="sources", action='append', help="Sources to use.")
     args = parser.parse_args()
 
