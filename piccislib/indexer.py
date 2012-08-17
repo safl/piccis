@@ -18,16 +18,60 @@
 #
 
 from base64 import b64decode
+import multiprocessing
 import hashlib
 import urllib
 import time
 import json
 import zlib
+import re
 import os
 
 import gdata.photos.service
 import gdata.media
 import gdata.geo
+
+def checksum(topic):
+    return hashlib.sha512(topic).hexdigest()
+
+def scan( step ):
+
+    (root, _, files) = step
+    indexes = []
+
+    shallow = False
+
+    #ext         = ['jpg', 'jpeg', 'png', 'avi', '3gp', 'mov', 'mp4']
+    ext         = ['jpg', 'jpeg', 'png']
+    ext_regex   = '|'.join(ext)
+
+    for fn in (fn for fn in files if re.match('.*(?:%s)' % ext_regex, fn, re.I)):
+        path = root +os.sep+ fn
+
+        if shallow:
+            content = None
+            csum    = None
+            size    = None
+            tstamp  = None
+        else:
+            stat = os.stat(path)
+            content = open(path).read()
+            csum    = checksum(content)
+            size    = len(content)
+            tstamp  = stat.st_ctime
+
+            if not size == stat.st_size:
+                print "ERR: Incorrect file-size %d != %d. %s" % (size, stat.st_size, path)
+
+        indexes.append({
+            'title':        fn,
+            'path':         path,
+            'size':         size, 
+            'timestamp':    tstamp,
+            'checksum':     csum
+        })
+
+    return (root, indexes)
 
 class Indexer(object):
 
@@ -66,9 +110,6 @@ class Indexer(object):
 
     def progress(self, txt):
         print txt
-
-    def checksum(self, topic):
-        return hashlib.sha512(topic).hexdigest()
 
 class Picasa(Indexer):
 
@@ -109,9 +150,14 @@ class Picasa(Indexer):
         
         self.progress("Indexing albums...")
         for album in (a for a in albums.entry if (a.title.text in limit) or not limit):
-            self.progress(" %d / %d ..." % (cur, count))
-            self.progress("title: %s, number of photos: %s, id: %s" % (album.title.text,
-          album.numphotos.text, album.gphoto_id.text))
+            self.progress(
+                " %d / %d ..." % 
+                (cur, count)
+            )
+            self.progress(
+                "title: %s, number of photos: %s, id: %s" % 
+                (album.title.text, album.numphotos.text, album.gphoto_id.text)
+            )
             cur += 1
             photos = self.cli.GetFeed(
                 '/data/feed/api/user/%s/albumid/%s?kind=photo' % (self.cli.email, album.gphoto_id.text)
@@ -136,36 +182,30 @@ class Local(Indexer):
 
     def __init__(self, name, root):
 
-        self.root = root
+        self.root   = root
 
         super(Local, self).__init__('local-%s' % name)
 
     def refresh(self, limit=[]):
 
-        index = {
-            '__META__': {
-                'timestamp':    int(time.time()),
-                'root':         self.root
-            }
-        }
+        pool    = multiprocessing.Pool()
+        index   = {'__META__': {
+            'timestamp':    int(time.time()),
+            'root':         self.root
+        }}
 
-        for root, dirs, files in os.walk(self.root):
-            text = os.path.basename(root)
+        ext         = ['jpg', 'jpeg', 'png', 'gif', 'mvi', 'mov', 'avi','3gp', 'mp4']
+        ext_regex   = '|'.join(ext)
 
-            if text not in index:
-                index[text] = []
+        work = ((root, dirs,  files) for root, dirs, files in os.walk(self.root) if files)
 
-            for fn in files:
-                path = root +os.sep+ fn
-                stat = os.stat(path)
-                index[text].append({
-                    'title':        fn,
-                    'size':         stat.st_size, 
-                    'timestamp':    stat.st_ctime,
-                    'checksum':     self.checksum(open(path).read()),
-                    'path':         path
-                })
+        for w in work:
+            (root, indexes) = scan(w)
+            if indexes:
+                index[root] = indexes
+                self.to_file( None, index )
 
         self.index = index
-        return index
+
+        return index       
 

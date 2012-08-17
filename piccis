@@ -19,49 +19,86 @@
 import ConfigParser
 import argparse
 import pprint
+import sys
 import os
 
 from piccislib.indexer import *
 
 #
 # Requirements: 
-#   - Python 2.7 ( argparse ), 
+#
+#   - Python 2.7 ( argparse ), dict-comprehensions.
 #   - GData ( Picasa Web Albums )
+#
+# Performance Hints:
+#
+#   - Get an SSD
+#   - On Linux: noatime or relatime;
+#
+# Find broken symlinks:
+#
+# find -L -type l
+#
+# Find and remove files:
+#
+# find . -name ".teamviewer" -exec rm -rf {} \;
+#
+# Remove broken symlinks:
+#
+# find -L -type l -exec rm {} \;
 #
 
 ERRNO_SUCCESS=0
 ERRNO_COMPARE_GT=200
 ERRNO_COMPARE_LT=210
 
+def sourceCount(count):
+    """Ensures that exactly "count" sources are provided to the command."""
+
+    def wrap(f):
+        def wrapped_f(*args):
+            if len(*args) > count:
+                return ERRNO_COMPARE_GT
+            elif len(*args) < count:
+                return ERRNO_COMPARE_LT
+            else:
+                return f(*args)
+            
+        return wrapped_f
+    return wrap
+
+def sourceMin(count):
+    """Ensures that at least "count" sources are provided to the command."""
+
+    def wrap(f):
+        def wrapped_f(*args):
+            if len(*args) < count:
+                return ERRNO_COMPARE_LT
+            else:
+                return f(*args)
+            
+        return wrapped_f
+    return wrap
+
+@sourceMin(1)
 def refresh( sources ):
 
     for source in sources:
         source.refresh()
         source.to_file()
 
+@sourceMin(1)
 def iprint( sources ):
-
-    files = {}
-    for src in sources:
-        files[src.name] = [fns['title'] for album in src.index for fns in src.index[album] if not album == "__META__"]
-
-    print files
-
-def iprint_flat( sources ):
 
     files = []
     for src in sources:
-        files += [fns['title'] for album in src.index for fns in src.index[album] if not album == "__META__"]
+        files += [fns['path'] for album in src.index for fns in src.index[album] if not album == "__META__"]
 
     for fn in files:
         print fn
 
+@sourceCount(2)
 def compare( sources ):
-
-    if len(sources) > 2:
-        return ERRNO_COMPARE_GT
-    elif len(sources) <2:
-        return ERRNO_COMPARE_LT
 
     left    = sources[0]
     right   = sources[1]
@@ -82,8 +119,8 @@ def compare( sources ):
     left_t  = dict((img['checksum'], img['path']) for album in left.index for img in left.index[album] if not album == "__META__")
     right_t = dict((img['checksum'], img['path']) for album in right.index for img in right.index[album] if not album == "__META__")
 
-    files['left']   = left_t
-    files['right']  = right_t
+    files['left']   = left_t.copy()
+    files['right']  = right_t.copy()
 
     for checksum in left_t:
         if checksum in right_t:
@@ -94,28 +131,35 @@ def compare( sources ):
 
     files['right_only'] = [(None, right_t[checksum]) for checksum in right_t]
 
-
     for fset in files:
         print "[%s - %s - %d]" % (fset, names[fset], len(files[fset]))
         if 'only' in fset:
             files[fset].sort()
-            for fn in files[fset]:
-                print fn
+            for l, r in files[fset]:
+                if l:
+                    print l,
+                if r:
+                    print r,
+                print ""
+
     return ERRNO_SUCCESS
 
+@sourceCount(1)
 def duplicates( sources ):
     """Determine duplicates based on checksum."""
 
-    dups    = {}
+    dups = {} # Duplicates are stored here with checksum as key pointing to a list of paths.
 
     files = [(img['checksum'], img['path']) for src in sources for album in src.index if album != "__META__" for img in src.index[album]]
     files.sort()
 
+    sums        = set([])
     checksum_p  = None
     path_p      = None
 
     for checksum, path in files:
 
+        sums.add(checksum)
         if checksum == checksum_p:  # Duplicates
             if checksum in dups:
                 dups[checksum].append(path)
@@ -124,8 +168,17 @@ def duplicates( sources ):
 
         checksum_p  = checksum
         path_p      = path
+    
+    dupf_count = 0
+    for dup in dups:
+        print dup[:len(dup)/2]
+        print dup[len(dup)/2:]
+        for path in dups[dup]:
+            print "  %s" % path
+            dupf_count += 1
 
-    pprint.pprint(dups)
+    print "[Total=%d, Unique=%d, DupSums%d, DupFiles=%d, Dups=%d]" % (len(files), len(sums), len(dups), dupf_count, dupf_count - len(dups))
+
     return dups
 
 def download( sources ):
@@ -133,18 +186,25 @@ def download( sources ):
     for src in sources:
         src.download()
 
+@sourceCount(2)
+def merge( sources ):
+
+    print "Nu merger jeg!", sources
+
+    return  ERRNO_SUCCESS
+
 def main(command, sources=[]):
 
     commands    = {
         'refresh':      refresh,
         'print':        iprint,
-        'print_flat':   iprint_flat,
         'compare':      compare,
         'duplicates':   duplicates,
-        'download':     download
+        'download':     download,
+        'merge':        merge
     }
     
-    commands[args.command]( sources )
+    sys.exit(commands[args.command]( sources ))
 
 if __name__ == "__main__":
 
@@ -155,9 +215,25 @@ if __name__ == "__main__":
     sources = []                            # List of picture-sources
 
     parser = argparse.ArgumentParser()      # Parse command-line
-    parser.add_argument("-c", "--config",   dest="config", help="Path to config-file.", type=str)
-    parser.add_argument("command", choices=['refresh','print','print_flat','compare', 'duplicates', 'download'], help="Perform an index of provided sources.")
-    parser.add_argument("-s", "--source", dest="sources", action='append', help="Sources to use.")
+    parser.add_argument(
+        "-c",
+        "--config",
+        dest    = "config",
+        help    = "Path to config-file.",
+        type    = str
+    )
+    parser.add_argument(
+        "command", 
+        choices = ['refresh','print', 'compare', 'duplicates', 'download', 'merge'],
+        help    = "Perform an index of provided sources."
+    )
+    parser.add_argument(
+        "-s",
+        "--source",
+        dest    = "sources",
+        action  = 'append', 
+        help    = "Sources to use."
+    )
     args = parser.parse_args()
 
     if args.config:                         # Parse 'sources' from config-file
