@@ -80,12 +80,31 @@ def sourceMin(count):
         return wrapped_f
     return wrap
 
+def sourceMax(count):
+    """Ensures that at most "count" sources are provided to the command."""
+
+    def wrap(f):
+        def wrapped_f(*args):
+            if len(*args) < count:
+                return ERRNO_COMPARE_LT
+            else:
+                return f(*args)
+            
+        return wrapped_f
+    return wrap
+
+#
+#   Commands
+#
+
 @sourceMin(1)
 def refresh( sources ):
 
     for source in sources:
         source.refresh()
         source.to_file()
+
+    return ERRNO_SUCCESS
 
 @sourceMin(1)
 def iprint( sources ):
@@ -97,8 +116,9 @@ def iprint( sources ):
     for fn in files:
         print fn
 
-@sourceCount(2)
-def compare( sources ):
+    return ERRNO_SUCCESS
+
+def __compare( sources ):
 
     left    = sources[0]
     right   = sources[1]
@@ -131,6 +151,12 @@ def compare( sources ):
 
     files['right_only'] = [(None, right_t[checksum]) for checksum in right_t]
 
+    return files
+
+@sourceCount(2)
+def compare( sources ):
+
+    files = __compare( sources )
     for fset in files:
         print "[%s - %s - %d]" % (fset, names[fset], len(files[fset]))
         if 'only' in fset:
@@ -140,7 +166,7 @@ def compare( sources ):
                     print l,
                 if r:
                     print r,
-                print ""
+                print ""   
 
     return ERRNO_SUCCESS
 
@@ -179,21 +205,27 @@ def duplicates( sources ):
 
     print "[Total=%d, Unique=%d, DupSums%d, DupFiles=%d, Dups=%d]" % (len(files), len(sums), len(dups), dupf_count, dupf_count - len(dups))
 
-    return dups
+    return ERRNO_SUCCESS
 
+@sourceCount(1)
 def download( sources ):
 
     for src in sources:
         src.download()
 
+    return ERRNO_SUCCESS
+
 @sourceCount(2)
 def merge( sources ):
 
     print "Nu merger jeg!", sources
+    files = __compare( sources )
+    for fn in files['right_only'][:10]:
+        print fn
 
     return  ERRNO_SUCCESS
 
-def main(command, sources=[]):
+if __name__ == "__main__":
 
     commands    = {
         'refresh':      refresh,
@@ -203,10 +235,6 @@ def main(command, sources=[]):
         'download':     download,
         'merge':        merge
     }
-    
-    sys.exit(commands[args.command]( sources ))
-
-if __name__ == "__main__":
 
     source_types = {
         'picasa':   Picasa,
@@ -224,7 +252,7 @@ if __name__ == "__main__":
     )
     parser.add_argument(
         "command", 
-        choices = ['refresh','print', 'compare', 'duplicates', 'download', 'merge'],
+        choices = [cmd for cmd in commands],
         help    = "Perform an index of provided sources."
     )
     parser.add_argument(
@@ -247,10 +275,13 @@ if __name__ == "__main__":
     conf = ConfigParser.RawConfigParser()
     conf.read(conf_path)
 
-    for source in args.sources:             # Instantiate sources
+    asources = args.sources if args.sources else []
+
+    for source in asources:             # Instantiate sources
         source_type = conf.get(source, 'type')
         source_args = dict([ opt for opt in conf.items(source) if not opt[0] == 'type' ])
         source_args['name'] = source
         sources.append( source_types[source_type]( **source_args ) )
+    
+    sys.exit(commands[args.command]( sources ))
 
-    main( args.command, sources )
